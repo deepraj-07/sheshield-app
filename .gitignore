@@ -1,0 +1,50 @@
+# =============================================================================
+# SheShield — .gitignore
+# =============================================================================
+
+# ---- Secrets & environment --------------------------------------------------
+.env
+# .env.example is intentionally NOT ignored — it's the safe template
+
+# ---- Flutter / Dart ---------------------------------------------------------
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.g.dart
+*.freezed.dart
+
+# ---- Android ----------------------------------------------------------------
+android/.gradle/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+
+# ---- iOS / macOS ------------------------------------------------------------
+ios/Pods/
+ios/.symlinks/
+macos/Pods/
+*.xcworkspace/xcuserdata/
+
+# ---- IDE --------------------------------------------------------------------
+.idea/
+.vscode/
+*.iml
+
+# ---- OS ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# ---- Logs -------------------------------------------------------------------
+*.log
+runlog.txt
+runlog_utf8.txt
+analyze.txt
+analyze_utf8.txt
+
+# ---- Firebase generated (keep firebase_options.dart in source control) ------
+# google-services.json contains no secrets beyond what's in .env,
+# but you may choose to ignore it:
+# android/app/google-services.json

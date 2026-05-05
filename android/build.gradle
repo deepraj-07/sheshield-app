@@ -1,0 +1,48 @@
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+def newBuildDir = rootProject.layout.buildDirectory.dir("../../build").get()
+rootProject.layout.buildDirectory.value(newBuildDir)
+
+subprojects {
+    def newSubprojectBuildDir = newBuildDir.dir(project.name)
+    project.layout.buildDirectory.value(newSubprojectBuildDir)
+}
+
+subprojects {
+    project.evaluationDependsOn(':app')
+}
+
+subprojects { subproject ->
+    subproject.plugins.withId('com.android.library') {
+        def androidExt = subproject.extensions.findByName('android')
+        if (androidExt != null) {
+            def currentNamespace = null
+            try {
+                currentNamespace = androidExt.namespace
+            } catch (ignored) {
+                currentNamespace = null
+            }
+
+            if (currentNamespace == null || currentNamespace.toString().trim().isEmpty()) {
+                def manifestFile = file("${subproject.projectDir}/src/main/AndroidManifest.xml")
+                if (manifestFile.exists()) {
+                    def manifestText = manifestFile.getText('UTF-8')
+                    def packageMatcher = (manifestText =~ /package="([^"]+)"/)
+                    def manifestPackage = packageMatcher.find() ? packageMatcher.group(1) : null
+                    if (manifestPackage != null && !manifestPackage.trim().isEmpty()) {
+                        androidExt.namespace = manifestPackage
+                    }
+                }
+            }
+        }
+    }
+}
+
+tasks.register("clean", Delete) {
+    delete(rootProject.layout.buildDirectory)
+}

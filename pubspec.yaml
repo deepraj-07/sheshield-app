@@ -1,0 +1,76 @@
+name: sheshield
+description: SheShield - Production-grade women's safety app for Android.
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.2
+
+  # ========== STATE MANAGEMENT ==========
+  provider: ^6.0.0
+
+  # ========== FIREBASE SERVICES ==========
+  firebase_core: ^2.24.0
+  firebase_auth: ^4.17.0
+  cloud_firestore: ^4.14.0
+  firebase_storage: ^11.6.0
+  firebase_messaging: ^14.7.0
+
+  # ========== LOCATION & MAPS ==========
+  geolocator: ^10.1.0
+  google_maps_flutter: ^2.5.0
+  geocoding: ^2.1.1
+
+  # ========== BLUETOOTH ==========
+  flutter_bluetooth_serial: ^0.4.0
+
+  # ========== CAMERA & MEDIA ==========
+  camera: ^0.10.5+5
+  video_player: ^2.8.2
+
+  # ========== AUDIO & VOICE ==========
+  permission_handler: ^11.3.1
+
+  # ========== LOCAL STORAGE ==========
+  shared_preferences: ^2.2.2
+  path_provider: ^2.1.2
+
+  # ========== CRYPTOGRAPHY & DATA ==========
+  crypto: ^3.0.3
+  pdf: ^3.10.5
+  http: ^1.1.0
+
+  # ========== NATIVE COMMUNICATION ==========
+  url_launcher: ^6.2.4
+
+  # ========== NOTIFICATIONS ==========
+  # flutter_local_notifications: ^16.1.0
+
+  # ========== UTILITIES ==========
+  intl: ^0.19.0
+  flutter_dotenv: ^5.1.0
+  logger: ^2.0.1+1
+  telephony: ^0.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  
+  assets:
+    - assets/images/
+    - assets/icons/
+    # NOTE: .env is intentionally NOT listed here.
+    # Declaring .env as an asset would bundle it inside the APK, exposing
+    # secrets to anyone who unpacks the binary. It is loaded from the
+    # filesystem in debug/local builds only via AppEnv.load().

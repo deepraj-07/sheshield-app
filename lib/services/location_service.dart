@@ -1,5 +1,7 @@
+import 'dart:convert';
+
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
+import 'package:http/http.dart' as http;
 import '../core/utils/logger.dart';
 import '../core/constants/app_constants.dart';
 
@@ -74,7 +76,8 @@ class LocationService {
 
       final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.best,
-        timeLimit: Duration(seconds: AppConstants.bluetoothConnectionTimeoutSec),
+        timeLimit:
+            Duration(seconds: AppConstants.bluetoothConnectionTimeoutSec),
       );
 
       AppLogger.i(
@@ -110,42 +113,27 @@ class LocationService {
   }
 
   // ========== REVERSE GEOCODING ==========
-  /// Get address from coordinates
-  /// Returns address string or null if failed
+  /// Get address from coordinates using Nominatim (free, no API key needed)
   Future<String?> getAddressFromCoordinates(
     double latitude,
     double longitude,
   ) async {
     try {
-      final placemarks = await placemarkFromCoordinates(latitude, longitude);
-
-      if (placemarks.isEmpty) return null;
-
-      final place = placemarks.first;
-      final address = _buildAddressString(place);
-
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse'
+        '?lat=$latitude&lon=$longitude&format=json',
+      );
+      final res = await http.get(uri, headers: {
+        'User-Agent': 'SheShieldApp/1.0 (safety-app)',
+      }).timeout(const Duration(seconds: 8));
+      final j = jsonDecode(res.body) as Map<String, dynamic>;
+      final address = j['display_name'] as String?;
       AppLogger.i('Reverse geocoded address: $address');
       return address;
     } catch (e, stackTrace) {
       AppLogger.e('Error reverse geocoding', e, stackTrace);
       return null;
     }
-  }
-
-  /// Build readable address from Placemark
-  String _buildAddressString(Placemark place) {
-    final components = <String>[
-      if (place.street != null && place.street!.isNotEmpty) place.street!,
-      if (place.locality != null && place.locality!.isNotEmpty) place.locality!,
-      if (place.administrativeArea != null &&
-          place.administrativeArea!.isNotEmpty)
-        place.administrativeArea!,
-      if (place.postalCode != null && place.postalCode!.isNotEmpty)
-        place.postalCode!,
-      if (place.country != null && place.country!.isNotEmpty) place.country!,
-    ];
-
-    return components.join(', ');
   }
 
   // ========== DISTANCE CALCULATION ==========

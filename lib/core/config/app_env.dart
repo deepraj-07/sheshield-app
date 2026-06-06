@@ -1,119 +1,83 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-import '../../firebase_options.dart';
-
 /// AppEnv centralizes all environment variable access.
 ///
-/// ## How it works
-///
-/// In local/debug builds, `AppEnv.load()` reads a `.env` file from the
-/// **filesystem** (not from Flutter assets). The file must exist at the
-/// project root when running `flutter run` from that directory.
-///
-/// In release/CI builds where no `.env` file is present, `load()` silently
-/// continues and every getter falls back to its hardcoded default. The app
-/// never crashes due to a missing `.env`.
-///
-/// ## Security model
-///
-/// `.env` is NEVER declared as a Flutter asset (it would be bundled into the
-/// APK and readable by anyone who unpacks it). It is only used as a local
-/// developer convenience to override values during development.
-///
-/// Firebase client config values (apiKey, appId, etc.) are NOT secrets —
-/// they are the same values in the committed `google-services.json`. Security
-/// is enforced by Firebase Security Rules on the server side.
-///
-/// ## Usage
-/// ```dart
-/// await AppEnv.load();   // once in main(), before Firebase.initializeApp()
-/// final key = AppEnv.googleMapsApiKey;
-/// ```
+/// No circular imports — Firebase fallback values are hardcoded here directly.
+/// firebase_options.dart does NOT import this file; it uses its own constants.
+/// This file does NOT import firebase_options.dart.
 class AppEnv {
-  AppEnv._(); // static-only — not instantiable
+  AppEnv._();
 
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
 
-  /// Attempts to load `.env` from the local filesystem.
-  ///
-  /// Silently succeeds when the file is absent (release builds, CI, devices
-  /// without a local `.env`). All getters fall back to their hardcoded
-  /// defaults in that case.
   static Future<void> load() async {
     try {
       await dotenv.load(fileName: '.env');
       if (kDebugMode) {
         debugPrint('AppEnv: .env loaded (${dotenv.env.length} keys)');
+        // Log which SMTP keys are present (values hidden)
+        final smtpKeys = [
+          'SMTP_HOST',
+          'SMTP_PORT',
+          'SMTP_USERNAME',
+          'SMTP_PASSWORD',
+          'SMTP_FROM_NAME'
+        ];
+        for (final k in smtpKeys) {
+          debugPrint(
+              'AppEnv: $k = ${dotenv.env.containsKey(k) ? "✓ set" : "✗ missing"}');
+        }
       }
-    } catch (_) {
-      // .env is optional. Missing file is expected in release/CI builds.
+    } catch (e) {
       if (kDebugMode) {
-        debugPrint('AppEnv: no .env file found — using built-in defaults.');
+        debugPrint('AppEnv: .env load failed — $e');
       }
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Firebase (Android)
-  //
-  // Fallbacks are the same values in google-services.json — safe to hardcode.
+  // SMTP Email
   // ---------------------------------------------------------------------------
 
-  static String get firebaseApiKey =>
-      _optional('FIREBASE_API_KEY', DefaultFirebaseOptions.defaultApiKey);
-
-  static String get firebaseAppId =>
-      _optional('FIREBASE_APP_ID', DefaultFirebaseOptions.defaultAppId);
-
-  static String get firebaseMessagingSenderId => _optional(
-      'FIREBASE_MESSAGING_SENDER_ID',
-      DefaultFirebaseOptions.defaultMessagingSenderId);
-
-  static String get firebaseProjectId =>
-      _optional('FIREBASE_PROJECT_ID', DefaultFirebaseOptions.defaultProjectId);
-
-  static String get firebaseStorageBucket => _optional(
-      'FIREBASE_STORAGE_BUCKET', DefaultFirebaseOptions.defaultStorageBucket);
+  static String get smtpHost => _optional('SMTP_HOST', 'smtp.gmail.com');
+  static int get smtpPort => int.tryParse(_optional('SMTP_PORT', '587')) ?? 587;
+  static String get smtpUsername => _optional('SMTP_USERNAME', '');
+  static String get smtpPassword => _optional('SMTP_PASSWORD', '');
+  static String get smtpFromName =>
+      _optional('SMTP_FROM_NAME', 'SheShield Emergency');
 
   // ---------------------------------------------------------------------------
   // Google Maps
   // ---------------------------------------------------------------------------
 
-  /// Google Maps API key. Empty string disables map features gracefully.
   static String get googleMapsApiKey => _optional('GOOGLE_MAPS_API_KEY', '');
 
   // ---------------------------------------------------------------------------
   // FCM
   // ---------------------------------------------------------------------------
 
-  /// Legacy FCM server key for direct push delivery.
-  /// Empty → app falls back to Firestore notification queue (Cloud Functions).
   static String get fcmServerKey => _optional('FCM_SERVER_KEY', '');
 
   // ---------------------------------------------------------------------------
   // Stealth mode
   // ---------------------------------------------------------------------------
 
-  /// Secret tap code that activates stealth mode.
   static String get stealthModeCode => _optional('STEALTH_MODE_CODE', '0000');
 
   // ---------------------------------------------------------------------------
   // External APIs
   // ---------------------------------------------------------------------------
 
-  /// OpenStreetMap Overpass API endpoint.
   static String get osmOverpassApiUrl => _optional(
       'OSM_OVERPASS_API_URL', 'https://overpass-api.de/api/interpreter');
 
   // ---------------------------------------------------------------------------
-  // Internal helper
+  // Helper
   // ---------------------------------------------------------------------------
 
-  /// Returns the `.env` value for [key] when present and non-empty,
-  /// otherwise returns [fallback].
   static String _optional(String key, String fallback) {
     final value = dotenv.env[key];
     return (value != null && value.isNotEmpty) ? value : fallback;

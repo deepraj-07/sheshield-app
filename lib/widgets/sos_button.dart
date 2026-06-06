@@ -1,22 +1,18 @@
+﻿import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_core/firebase_core.dart';
 import '../core/constants/app_colors.dart';
 import '../core/constants/app_constants.dart';
 import '../core/constants/app_strings.dart';
 
 /// SOS Button widget - The primary emergency trigger.
-/// 
-/// Features:
-/// - Large 160px circular button with gradient
-/// - 3-second hold detection with animated countdown ring
-/// - Glowing pulse animation when idle
-/// - Heavy haptic feedback on trigger
-/// - Displays countdown text and progress ring while holding
+/// Also listens to RTDB current_status/is_alert so hardware triggers
+/// animate the button into active state automatically.
 class SosButton extends StatefulWidget {
-  /// Callback when SOS is triggered (after 3-second hold)
   final VoidCallback onSosTriggered;
-
-  /// Optional callback during countdown (e.g., for UI updates)
   final ValueChanged<double>? onCountdownUpdate;
 
   const SosButton({
@@ -29,28 +25,55 @@ class SosButton extends StatefulWidget {
   State<SosButton> createState() => _SosButtonState();
 }
 
-class _SosButtonState extends State<SosButton>
-    with TickerProviderStateMixin {
-  // ========== ANIMATION CONTROLLERS ==========
+class _SosButtonState extends State<SosButton> with TickerProviderStateMixin {
   late AnimationController _pulseController;
   late AnimationController _scaleController;
   late Animation<double> _pulseAnimation;
   late Animation<double> _scaleAnimation;
 
-  // ========== STATE ==========
   bool _isHolding = false;
-  double _holdProgress = 0.0; // 0.0 to 1.0
+  double _holdProgress = 0.0;
   late Stopwatch _holdTimer;
+
+  // Hardware trigger state — true when Pi sets is_alert=true
+  bool _isHardwareActive = false;
+  StreamSubscription<DatabaseEvent>? _rtdbSub;
 
   @override
   void initState() {
     super.initState();
     _setupAnimations();
     _holdTimer = Stopwatch();
+    _startRtdbListener();
   }
 
+  // ── RTDB listener ──────────────────────────────────────────────────────────
+  void _startRtdbListener() {
+    try {
+      final db = FirebaseDatabase.instanceFor(
+        app: Firebase.app(),
+        databaseURL:
+            'https://sheshield-bd387-default-rtdb.asia-southeast1.firebasedatabase.app',
+      );
+      _rtdbSub = db.ref('current_status/is_alert').onValue.listen(
+        (event) {
+          if (!mounted) return;
+          final bool isAlert = event.snapshot.value as bool? ?? false;
+          // Only update visual state — never auto-trigger from RTDB here.
+          // Hardware trigger is handled by SOSService directly.
+          if (isAlert != _isHardwareActive) {
+            setState(() => _isHardwareActive = isAlert);
+          }
+        },
+        onError: (_) {}, // silent — RTDB optional
+      );
+    } catch (_) {
+      // Firebase not ready yet or RTDB not configured — ignore
+    }
+  }
+
+  // ── Animations ─────────────────────────────────────────────────────────────
   void _setupAnimations() {
-    // Pulse animation (continuous glow)
     _pulseController = AnimationController(
       duration: Duration(milliseconds: AppConstants.sosButtonPulseMs),
       vsync: this,
@@ -60,7 +83,6 @@ class _SosButtonState extends State<SosButton>
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
 
-    // Scale animation (press down/up)
     _scaleController = AnimationController(
       duration: const Duration(milliseconds: 150),
       vsync: this,
@@ -75,23 +97,18 @@ class _SosButtonState extends State<SosButton>
   void dispose() {
     _pulseController.dispose();
     _scaleController.dispose();
+    _rtdbSub?.cancel();
     super.dispose();
   }
 
-  // ========== HOLD DETECTION ==========
+  // ── Hold detection ─────────────────────────────────────────────────────────
   void _onLongPressStart(LongPressStartDetails details) {
     _isHolding = true;
     _holdProgress = 0.0;
     _holdTimer.reset();
     _holdTimer.start();
-
-    // Animate scale down
     _scaleController.forward();
-
-    // Haptic feedback
     HapticFeedback.lightImpact();
-
-    // Start countdown timer
     _startCountdownTimer();
   }
 
@@ -99,10 +116,7 @@ class _SosButtonState extends State<SosButton>
     _isHolding = false;
     _holdTimer.stop();
     _holdProgress = 0.0;
-
-    // Animate scale back up
     _scaleController.reverse();
-
     setState(() {});
   }
 
@@ -110,10 +124,7 @@ class _SosButtonState extends State<SosButton>
     _isHolding = false;
     _holdTimer.stop();
     _holdProgress = 0.0;
-
-    // Animate scale back up
     _scaleController.reverse();
-
     setState(() {});
   }
 
@@ -123,15 +134,9 @@ class _SosButtonState extends State<SosButton>
         final elapsedMs = _holdTimer.elapsedMilliseconds;
         final progress =
             (elapsedMs / AppConstants.sosHoldDurationMs).clamp(0.0, 1.0);
-
         widget.onCountdownUpdate?.call(progress);
-
-        setState(() {
-          _holdProgress = progress;
-        });
-
+        setState(() => _holdProgress = progress);
         if (progress >= 1.0) {
-          // SOS triggered!
           _triggerSOS();
         } else {
           _startCountdownTimer();
@@ -144,22 +149,17 @@ class _SosButtonState extends State<SosButton>
     _isHolding = false;
     _holdTimer.stop();
     _scaleController.reverse();
-
-    // Heavy haptic feedback
     HapticFeedback.heavyImpact();
-
-    // Call SOS callback
     widget.onSosTriggered();
-
-    // Reset after delay
-    setState(() {
-      _holdProgress = 0.0;
-    });
+    setState(() => _holdProgress = 0.0);
   }
 
-  // ========== BUILD UI ==========
+  // ── Build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    // Button is "active" if user is holding OR hardware triggered
+    final bool isActive = _isHolding || _isHardwareActive;
+
     return GestureDetector(
       onLongPressStart: _onLongPressStart,
       onLongPressEnd: _onLongPressEnd,
@@ -167,9 +167,8 @@ class _SosButtonState extends State<SosButton>
       child: AnimatedBuilder(
         animation: Listenable.merge([_pulseAnimation, _scaleAnimation]),
         builder: (context, child) {
-          // Use pulse animation only when not holding
-          final scale = _isHolding ? _scaleAnimation.value : _pulseAnimation.value;
-
+          final scale =
+              isActive ? _scaleAnimation.value : _pulseAnimation.value;
           return Transform.scale(
             scale: scale,
             child: Column(
@@ -180,53 +179,42 @@ class _SosButtonState extends State<SosButton>
                     alignment: Alignment.center,
                     clipBehavior: Clip.none,
                     children: [
-                      if (!_isHolding)
-                        Container(
-                          width: 190,
-                          height: 190,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: AppColors.primaryLight.withValues(alpha: 0.16),
-                              width: 9,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.primaryLight.withValues(alpha: 0.20),
-                                blurRadius: 28,
-                                spreadRadius: 6,
-                              ),
-                            ],
+                      // Outer glow ring
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        width: isActive ? 186 : 190,
+                        height: isActive ? 186 : 190,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: isActive
+                                ? AppColors.danger.withValues(alpha: 0.14)
+                                : AppColors.primaryLight
+                                    .withValues(alpha: 0.16),
+                            width: 9,
                           ),
-                        ),
-                      if (_isHolding)
-                        Container(
-                          width: 186,
-                          height: 186,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: AppColors.danger.withValues(alpha: 0.14),
-                              width: 9,
+                          boxShadow: [
+                            BoxShadow(
+                              color: isActive
+                                  ? AppColors.danger.withValues(alpha: 0.20)
+                                  : AppColors.primaryLight
+                                      .withValues(alpha: 0.20),
+                              blurRadius: isActive ? 24 : 28,
+                              spreadRadius: isActive ? 3 : 6,
                             ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: AppColors.danger.withValues(alpha: 0.20),
-                                blurRadius: 24,
-                                spreadRadius: 3,
-                              ),
-                            ],
-                          ),
+                          ],
                         ),
+                      ),
 
-                      // ========== BUTTON CONTAINER ==========
-                      Container(
+                      // Main button
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
                         width: 160,
                         height: 160,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           gradient: LinearGradient(
-                            colors: _isHolding
+                            colors: isActive
                                 ? [AppColors.danger, AppColors.dangerDark]
                                 : AppColors.sosPulseGradient,
                             begin: Alignment.topLeft,
@@ -234,63 +222,88 @@ class _SosButtonState extends State<SosButton>
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: (_isHolding ? AppColors.danger : AppColors.primary)
+                              color: (isActive
+                                      ? AppColors.danger
+                                      : AppColors.primary)
                                   .withValues(alpha: 0.30),
-                                blurRadius: _isHolding ? 16 : 20,
-                                spreadRadius: _isHolding ? 1 : 3,
+                              blurRadius: isActive ? 16 : 20,
+                              spreadRadius: isActive ? 1 : 3,
                             ),
                           ],
                         ),
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
-                          // ========== PROGRESS RING (when holding) ==========
-                          if (_isHolding)
-                            Positioned.fill(
-                              child: Padding(
-                                padding: const EdgeInsets.all(7),
-                                child: CircularProgressIndicator(
-                                  value: _holdProgress,
-                                  strokeWidth: 5,
-                                  valueColor: const AlwaysStoppedAnimation<Color>(
-                                    Colors.white,
+                            // Progress ring (holding)
+                            if (_isHolding)
+                              Positioned.fill(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(7),
+                                  child: CircularProgressIndicator(
+                                    value: _holdProgress,
+                                    strokeWidth: 5,
+                                    valueColor:
+                                        const AlwaysStoppedAnimation<Color>(
+                                            Colors.white),
+                                    backgroundColor:
+                                        Colors.white.withValues(alpha: 0.18),
                                   ),
-                                  backgroundColor: Colors.white.withValues(alpha: 0.18),
                                 ),
                               ),
-                            ),
 
-                            // ========== CENTRAL CONTENT ==========
+                            // Hardware active pulse ring
+                            if (_isHardwareActive && !_isHolding)
+                              Positioned.fill(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(7),
+                                  child: CircularProgressIndicator(
+                                    value: null, // indeterminate
+                                    strokeWidth: 4,
+                                    valueColor:
+                                        const AlwaysStoppedAnimation<Color>(
+                                            Colors.white),
+                                    backgroundColor:
+                                        Colors.white.withValues(alpha: 0.18),
+                                  ),
+                                ),
+                              ),
+
+                            // Label
                             Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                              // Icon
-                              const SizedBox(height: 8),
-
-                              Text(
-                                'SOS',
-                                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w800,
-                                      letterSpacing: -1,
-                                    ),
-                              ),
-
-                              const SizedBox(height: 2),
-
-                              Text(
-                                _isHolding ? 'RELAYING...' : 'HOLD 3 SEC',
-                                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                                      color: Colors.white.withValues(alpha: 0.95),
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: 1.2,
-                                    ),
-                              ),
-
-                                // Countdown or instructions
+                                const SizedBox(height: 8),
+                                Text(
+                                  'SOS',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .headlineMedium
+                                      ?.copyWith(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: -1,
+                                      ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _isHardwareActive && !_isHolding
+                                      ? 'HW ALERT'
+                                      : _isHolding
+                                          ? 'RELAYING...'
+                                          : 'HOLD 1 SEC',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelLarge
+                                      ?.copyWith(
+                                        color: Colors.white
+                                            .withValues(alpha: 0.95),
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 1.2,
+                                      ),
+                                ),
                                 if (_isHolding)
                                   Text(
-                                    '${(3.0 - (_holdProgress * 3)).toStringAsFixed(1)}s',
+                                    '${(1.0 - _holdProgress).clamp(0.0, 1.0).toStringAsFixed(1)}s',
                                     style: Theme.of(context)
                                         .textTheme
                                         .labelLarge
@@ -298,9 +311,7 @@ class _SosButtonState extends State<SosButton>
                                           color: Colors.white,
                                           fontWeight: FontWeight.w800,
                                         ),
-                                  )
-                                else
-                                  const SizedBox(height: 0),
+                                  ),
                               ],
                             ),
                           ],
@@ -309,9 +320,7 @@ class _SosButtonState extends State<SosButton>
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 20),
-
                 if (_isHolding)
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 28),
@@ -322,23 +331,33 @@ class _SosButtonState extends State<SosButton>
                           child: LinearProgressIndicator(
                             value: _holdProgress,
                             minHeight: 4,
-                            backgroundColor: AppColors.danger.withValues(alpha: 0.18),
+                            backgroundColor:
+                                AppColors.danger.withValues(alpha: 0.18),
                             valueColor: const AlwaysStoppedAnimation<Color>(
-                              AppColors.danger,
-                            ),
+                                AppColors.danger),
                           ),
                         ),
                         const SizedBox(height: 10),
                         Text(
                           'Keep holding to trigger emergency alert...',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                                color: AppColors.danger,
-                                fontWeight: FontWeight.w600,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.labelMedium?.copyWith(
+                                    color: AppColors.danger,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
                       ],
                     ),
+                  )
+                else if (_isHardwareActive)
+                  Text(
+                    '🚨 Hardware alert active',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.danger,
+                          fontWeight: FontWeight.w700,
+                        ),
+                    textAlign: TextAlign.center,
                   )
                 else
                   Text(

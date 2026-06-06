@@ -2,7 +2,7 @@
 class AppConstants {
   // ========== SOS FLOW ==========
   /// Time to hold SOS button before trigger (milliseconds)
-  static const int sosHoldDurationMs = 3000;
+  static const int sosHoldDurationMs = 1000;
 
   /// Video recording duration on SOS (seconds)
   static const int sosVideoRecordDurationSec = 30;

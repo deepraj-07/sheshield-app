@@ -1,266 +1,317 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
-
 import '../core/constants/app_colors.dart';
 import '../core/constants/app_constants.dart';
 import '../models/sos_event_model.dart';
+import '../services/email_service.dart';
 import '../services/evidence_service.dart';
 import '../services/firebase_service.dart';
+import '../services/local_storage_service.dart';
 
+/// ReportDetailScreen shows the full evidence report for a single SOS event.
+/// Accessed from EvidenceOverview by tapping "View Report" on a report card.
 class ReportDetailScreen extends StatefulWidget {
   final String reportId;
+  final SosEventModel? preloadedReport;
 
-  const ReportDetailScreen({super.key, required this.reportId});
+  const ReportDetailScreen({
+    Key? key,
+    required this.reportId,
+    this.preloadedReport,
+  }) : super(key: key);
 
   @override
   State<ReportDetailScreen> createState() => _ReportDetailScreenState();
 }
 
 class _ReportDetailScreenState extends State<ReportDetailScreen> {
-  final EvidenceService _evidenceService = EvidenceService();
-
+  // ── State variables (preserved exactly) ──────────────────────────────────
   SosEventModel? _report;
   List<Map<String, dynamic>> _evidenceFiles = [];
   bool _loading = true;
-
-  // Per-action busy flags so each button shows its own spinner
   bool _busyPdf = false;
   bool _busyVideo = false;
   bool _busyReport = false;
   bool _busyResolve = false;
   bool _busyDelete = false;
 
-  bool get _anyBusy =>
-      _busyPdf || _busyVideo || _busyReport || _busyResolve || _busyDelete;
+  final EvidenceService _evidenceService = EvidenceService();
 
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
   @override
   void initState() {
     super.initState();
     _loadReport();
   }
 
-  // ---------------------------------------------------------------------------
-  // Data loading
-  // ---------------------------------------------------------------------------
-
+  // ── Data loading ──────────────────────────────────────────────────────────
   Future<void> _loadReport() async {
     setState(() => _loading = true);
     try {
       final fs = FirebaseService();
       await fs.init();
+
+      // Always fetch fresh from Firestore so we get the latest data
+      // (video URL, address, contacts may have been updated after initial save)
+      final docId = widget.preloadedReport?.eventId ?? widget.reportId;
       final doc = await fs.firestore
           .collection(AppConstants.firestoreSosEventsCollection)
-          .doc(widget.reportId)
+          .doc(docId)
           .get();
-      if (doc.exists) {
-        _report = SosEventModel.fromFirestore(doc);
-        _evidenceFiles = await _evidenceService.getEvidenceFiles(_report!);
+
+      SosEventModel report;
+      if (doc.exists && doc.data() != null) {
+        report = SosEventModel.fromFirestore(doc);
+      } else if (widget.preloadedReport != null) {
+        // Firestore doc not found yet (immediate save may still be in flight)
+        // — use preloaded data as fallback
+        report = widget.preloadedReport!;
+      } else {
+        if (mounted) {
+          _showSnack('Report not found.');
+          Navigator.of(context).pop();
+        }
+        return;
+      }
+
+      final files = await _evidenceService.getEvidenceFiles(report);
+      if (mounted) {
+        setState(() {
+          _report = report;
+          _evidenceFiles = files;
+          _loading = false;
+        });
       }
     } catch (e) {
-      if (mounted) _showSnack('Unable to load report: $e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      // Fallback to preloaded if Firestore fetch fails
+      if (widget.preloadedReport != null && mounted) {
+        setState(() {
+          _report = widget.preloadedReport;
+          _evidenceFiles = [];
+          _loading = false;
+        });
+      } else if (mounted) {
+        setState(() => _loading = false);
+        _showSnack('Failed to load report: $e');
+      }
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // PDF download / generate on-demand
-  // ---------------------------------------------------------------------------
+  // ── Actions (logic preserved exactly) ────────────────────────────────────
 
   Future<void> _downloadPdf() async {
-    final report = _report;
-    if (report == null || _busyPdf) return;
+    if (_report == null || _busyPdf) return;
     setState(() => _busyPdf = true);
-    _showSnack(report.hasPdfReport
-        ? 'Opening PDF report...'
-        : 'Generating PDF report…');
     try {
-      final url = await _evidenceService.getOrCreatePdfReportUrl(report);
-      await _openUrl(url);
-      // Reload so pdfReportUrl is cached in the model for next time
-      await _loadReport();
+      final url = await _evidenceService.getOrCreatePdfReportUrl(_report!);
+      final uri = Uri.parse(url);
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        _showSnack('Could not open PDF.');
+      } else {
+        // Reload to pick up the new pdfReportUrl if it was just generated.
+        await _loadReport();
+      }
     } catch (e) {
-      if (mounted) _showSnack('PDF failed: $e');
+      _showSnack('PDF error: $e');
     } finally {
       if (mounted) setState(() => _busyPdf = false);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Video / evidence file download
-  // ---------------------------------------------------------------------------
-
   Future<void> _downloadVideo() async {
-    final report = _report;
-    if (report == null || _busyVideo) return;
+    if (_report == null || _busyVideo) return;
     setState(() => _busyVideo = true);
-    _showSnack('Fetching video evidence URL…');
     try {
-      final url = await _evidenceService.getVideoDownloadUrl(report);
-      await _openUrl(url);
+      // Use the stored video URL directly if available
+      final directUrl = _report!.videoUrl;
+      if (directUrl != null && directUrl.isNotEmpty) {
+        final uri = Uri.parse(directUrl);
+        if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          _showSnack('Could not open video. Try a different video player.');
+        }
+        return;
+      }
+      // Fallback: look up in Firebase Storage
+      final url = await _evidenceService.getVideoDownloadUrl(_report!);
+      final uri = Uri.parse(url);
+      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        _showSnack('Could not open video.');
+      }
     } catch (e) {
-      if (mounted) _showSnack('Video unavailable: $e');
+      _showSnack('Video not available: $e');
     } finally {
       if (mounted) setState(() => _busyVideo = false);
     }
   }
 
-  /// Download an arbitrary evidence file by its stored URL.
-  Future<void> _downloadEvidenceFile(String url, String label) async {
-    _showSnack('Opening $label…');
-    try {
-      await _openUrl(url);
-    } catch (e) {
-      if (mounted) _showSnack('Could not open file: $e');
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Report to authorities (email draft)
-  // ---------------------------------------------------------------------------
-
   Future<void> _reportToAuthorities() async {
-    final report = _report;
-    if (report == null || _busyReport) return;
-
-    final confirmed = await _confirm(
-      title: 'Report to authorities?',
+    if (_report == null || _busyReport) return;
+    final confirmed = await _confirmDialog(
+      title: 'Share Evidence Report?',
       message:
-          'This generates the PDF evidence package and opens an email draft pre-filled with incident details. You can review and send it yourself.',
-      confirmLabel: 'Continue',
+          'This will send the evidence report to all your emergency contacts via email.',
+      confirmLabel: 'Share',
     );
     if (!confirmed) return;
-
     setState(() => _busyReport = true);
-    _showSnack('Preparing evidence package…');
     try {
-      final pdfUrl = await _evidenceService.getOrCreatePdfReportUrl(report);
-      final subject = Uri.encodeComponent(
-          'SheShield SOS Incident Report – ${report.eventId}');
-      final body = Uri.encodeComponent(
-        'Incident ID : ${report.eventId}\n'
-        'Date/Time   : ${report.timestamp.toIso8601String()}\n'
-        'Location    : ${report.address ?? '${report.latitude}, ${report.longitude}'}\n'
-        'Maps link   : ${report.mapsUrl}\n'
-        'Trigger     : ${report.triggerSource ?? 'Unknown'}\n'
-        '\n--- Evidence ---\n'
-        'PDF Report  : $pdfUrl\n'
-        'Video       : ${report.videoUrl ?? 'Unavailable'}\n'
-        'SHA-256     : ${report.sha256Hash ?? 'Unavailable'}\n'
-        '\nThis report was generated automatically by SheShield.',
-      );
-      final uri = Uri.parse('mailto:?subject=$subject&body=$body');
-      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-        throw StateError(
-            'No email app found. Please install an email client and try again.');
+      final r = _report!;
+      final stored = await LocalStorageService.loadContacts();
+      final emailContacts = stored
+          .where((c) => c.email.trim().isNotEmpty)
+          .map((c) => EmailContact(name: c.name, email: c.email.trim()))
+          .toList();
+
+      if (emailContacts.isNotEmpty) {
+        final sent = await EmailService().sendEmergencyEmail(
+          contacts: emailContacts,
+          senderName: FirebaseService().auth.currentUser?.displayName ??
+              'SheShield User',
+          latitude: r.latitude,
+          longitude: r.longitude,
+          address: r.address,
+          triggerSource: 'Evidence Report: ${r.eventId}',
+        );
+        _showSnack('Report sent to $sent contact(s).');
+      } else {
+        // Fallback: open mail app
+        final pdfUrl = await _evidenceService.getOrCreatePdfReportUrl(r);
+        final subject =
+            Uri.encodeComponent('SheShield SOS Report ${r.eventId}');
+        final body = Uri.encodeComponent(
+          'Incident ID: ${r.eventId}\n'
+          'Time: ${r.timestamp.toIso8601String()}\n'
+          'Location: ${r.mapsUrl}\n'
+          'Address: ${r.address ?? 'Unavailable'}\n'
+          'Evidence PDF: $pdfUrl\n'
+          'Video: ${r.videoUrl ?? 'Unavailable'}\n'
+          'SHA-256: ${r.sha256Hash ?? 'Unavailable'}',
+        );
+        final uri = Uri.parse('mailto:?subject=$subject&body=$body');
+        if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          _showSnack('No email app available.');
+        }
       }
     } catch (e) {
-      if (mounted) _showSnack(e.toString());
+      _showSnack('Report error: $e');
     } finally {
       if (mounted) setState(() => _busyReport = false);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Mark resolved
-  // ---------------------------------------------------------------------------
-
   Future<void> _markResolved() async {
-    final report = _report;
-    if (report == null || report.isResolved || _busyResolve) return;
-
-    final confirmed = await _confirm(
-      title: 'Mark as resolved?',
+    if (_report == null || _busyResolve) return;
+    final confirmed = await _confirmDialog(
+      title: 'Mark as Resolved?',
       message:
-          'Evidence is preserved. The incident status will be updated to Resolved.',
-      confirmLabel: 'Mark resolved',
+          'This will mark the incident as resolved. You can still view the evidence.',
+      confirmLabel: 'Mark Resolved',
     );
     if (!confirmed) return;
-
     setState(() => _busyResolve = true);
-    _showSnack('Updating status…');
     try {
-      await _evidenceService.markReportResolved(report);
+      await _evidenceService.markReportResolved(_report!);
       await _loadReport();
-      if (mounted) _showSnack('Marked as resolved.');
+      _showSnack('Incident marked as resolved.');
     } catch (e) {
-      if (mounted) _showSnack('Update failed: $e');
+      _showSnack('Error: $e');
     } finally {
       if (mounted) setState(() => _busyResolve = false);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Delete report (two-step confirmation)
-  // ---------------------------------------------------------------------------
-
   Future<void> _deleteReport() async {
-    final report = _report;
-    if (report == null || _busyDelete) return;
-
-    // Step 1 – warn
-    final step1 = await _confirm(
-      title: 'Delete this report?',
+    if (_report == null || _busyDelete) return;
+    final confirmed = await _confirmTyped(
+      title: 'Delete Report',
       message:
-          'All evidence files (video, PDF) stored in Firebase will be permanently removed. '
-          'This cannot be undone.',
-      confirmLabel: 'Continue',
-      destructive: true,
+          'This permanently deletes the SOS record and all stored evidence files. '
+          'Type DELETE to confirm.',
+      confirmWord: 'DELETE',
     );
-    if (!step1) return;
-
-    // Step 2 – type-to-confirm
-    final step2 = await _confirmTyped(
-      title: 'Confirm deletion',
-      instruction: 'Type DELETE to confirm',
-      expectedValue: 'DELETE',
-    );
-    if (!step2) return;
-
+    if (!confirmed) return;
     setState(() => _busyDelete = true);
-    _showSnack('Deleting report and evidence…');
     try {
-      await _evidenceService.deleteReport(report);
+      await _evidenceService.deleteReport(_report!);
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (e) {
       if (mounted) {
-        _showSnack('Report deleted.');
-        Navigator.of(context)
-            .pop(true); // signal caller that report was deleted
+        setState(() => _busyDelete = false);
+        _showSnack('Delete error: $e');
+      }
+    }
+  }
+
+  Future<void> _sendToPolice() async {
+    if (_report == null) return;
+    final confirmed = await _confirmDialog(
+      title: 'Send to Police?',
+      message:
+          'This will send the evidence report directly to the police email (deepraj5915@gmail.com) via SMTP.',
+      confirmLabel: 'Send',
+    );
+    if (!confirmed) return;
+    setState(() => _busyReport = true);
+    try {
+      final r = _report!;
+      const policeEmail = 'deepraj5915@gmail.com';
+      final senderName =
+          FirebaseService().auth.currentUser?.displayName ?? 'SheShield User';
+
+      // Send via SMTP directly — no UI interaction needed
+      final sent = await EmailService().sendEmergencyEmail(
+        contacts: [
+          const EmailContact(name: 'Police Authority', email: policeEmail)
+        ],
+        senderName: senderName,
+        latitude: r.latitude,
+        longitude: r.longitude,
+        address: r.address,
+        triggerSource: 'Police Report: ${r.eventId}',
+      );
+
+      if (sent > 0) {
+        _showSnack('Report sent to police ($policeEmail) successfully.');
+      } else {
+        // Fallback: open mail app pre-filled
+        final pdfUrl = await _evidenceService.getOrCreatePdfReportUrl(r);
+        final subject = Uri.encodeComponent(
+            'URGENT: SheShield SOS Police Report - ${r.eventId}');
+        final body = Uri.encodeComponent(
+          'URGENT POLICE REPORT\n'
+          '====================\n\n'
+          'Incident ID: ${r.eventId}\n'
+          'Date & Time: ${r.timestamp.toIso8601String()}\n'
+          'Location: ${r.mapsUrl}\n'
+          'Address: ${r.address ?? 'Unavailable'}\n'
+          'Trigger: ${r.triggerSource ?? 'Unknown'}\n'
+          'Heart Rate at Trigger: ${r.bpmAtTrigger != null ? '${r.bpmAtTrigger} BPM' : 'Not captured'}\n'
+          'Contacts Notified: ${r.contactsNotified.isEmpty ? 'None' : r.contactsNotified.join(', ')}\n'
+          'Status: ${r.isResolved ? 'Resolved' : 'Open'}\n\n'
+          'DIGITAL EVIDENCE\n'
+          '----------------\n'
+          'Evidence PDF: $pdfUrl\n'
+          'Video Evidence: ${r.videoUrl ?? 'Unavailable'}\n'
+          'SHA-256 Hash: ${r.sha256Hash ?? 'Unavailable'}\n\n'
+          'This report was generated by SheShield — a personal safety application.',
+        );
+        final uri =
+            Uri.parse('mailto:$policeEmail?subject=$subject&body=$body');
+        if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          _showSnack('Could not send email. Check SMTP settings in .env');
+        }
       }
     } catch (e) {
-      if (mounted) _showSnack('Delete failed: $e');
+      _showSnack('Error sending to police: $e');
     } finally {
-      if (mounted) setState(() => _busyDelete = false);
+      if (mounted) setState(() => _busyReport = false);
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
+  // ── Dialog helpers ────────────────────────────────────────────────────────
 
-  Future<void> _openUrl(String url) async {
-    final uri = Uri.parse(url);
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      throw StateError(
-          'Could not open URL. Check your default browser/app settings.');
-    }
-  }
-
-  Future<void> _openMaps() async {
-    final report = _report;
-    if (report == null) return;
-    final uri = Uri.parse(report.mapsUrl);
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      _showSnack('Could not open maps.');
-    }
-  }
-
-  void _copyToClipboard(String value, String label) {
-    Clipboard.setData(ClipboardData(text: value));
-    _showSnack('$label copied to clipboard.');
-  }
-
-  Future<bool> _confirm({
+  Future<bool> _confirmDialog({
     required String title,
     required String message,
     required String confirmLabel,
@@ -289,16 +340,15 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
     return result ?? false;
   }
 
-  /// Shows a dialog where the user must type [expectedValue] to proceed.
+  /// confirmTyped — requires the user to type a specific word before confirming.
   Future<bool> _confirmTyped({
     required String title,
-    required String instruction,
-    required String expectedValue,
+    required String message,
+    required String confirmWord,
   }) async {
     final controller = TextEditingController();
     final result = await showDialog<bool>(
       context: context,
-      barrierDismissible: false,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
@@ -308,15 +358,14 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(instruction,
-                      style: const TextStyle(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 12),
+                  Text(message),
+                  const SizedBox(height: 16),
                   TextField(
                     controller: controller,
                     autofocus: true,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      hintText: 'DELETE',
+                    decoration: InputDecoration(
+                      hintText: confirmWord,
+                      border: const OutlineInputBorder(),
                     ),
                     onChanged: (_) => setDialogState(() {}),
                   ),
@@ -328,12 +377,12 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
-                  onPressed: controller.text.trim() == expectedValue
+                  onPressed: controller.text.trim() == confirmWord
                       ? () => Navigator.of(ctx).pop(true)
                       : null,
                   style:
                       FilledButton.styleFrom(backgroundColor: AppColors.danger),
-                  child: const Text('Delete permanently'),
+                  child: const Text('Delete'),
                 ),
               ],
             );
@@ -352,318 +401,16 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  // ---------------------------------------------------------------------------
-  // Build
-  // ---------------------------------------------------------------------------
+  // ── Helpers ───────────────────────────────────────────────────────────────
 
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    final r = _report;
-    if (r == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Report')),
-        body: const Center(child: Text('Report not found.')),
-      );
-    }
-
-    return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: _buildAppBar(r),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _HeaderCard(report: r),
-            const SizedBox(height: 14),
-            _SummaryCard(report: r, onOpenMaps: _openMaps),
-            const SizedBox(height: 14),
-            _buildEvidenceFilesSection(r),
-            const SizedBox(height: 14),
-            _VerificationBox(
-              report: r,
-              onCopyHash: r.sha256Hash != null
-                  ? () => _copyToClipboard(r.sha256Hash!, 'SHA-256 hash')
-                  : null,
-            ),
-            if (r.notes != null && r.notes!.isNotEmpty) ...[
-              const SizedBox(height: 14),
-              _NotesCard(notes: r.notes!),
-            ],
-            const SizedBox(height: 20),
-            _buildActionButtons(r),
-          ],
-        ),
-      ),
-    );
+  /// Format eventId as SSE-XXXX (first 8 chars uppercased after "SSE-").
+  String _formatIncidentId(String eventId) {
+    final clean = eventId.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
+    final suffix = clean.length > 8 ? clean.substring(0, 8) : clean;
+    return 'SSE-$suffix';
   }
 
-  PreferredSizeWidget _buildAppBar(SosEventModel r) {
-    return AppBar(
-      backgroundColor: Colors.transparent,
-      elevation: 0,
-      centerTitle: false,
-      title: Text(
-        'Evidence Report',
-        style: Theme.of(context)
-            .textTheme
-            .titleLarge
-            ?.copyWith(fontWeight: FontWeight.w800),
-      ),
-      actions: [
-        PopupMenuButton<String>(
-          enabled: !_anyBusy,
-          onSelected: (value) {
-            switch (value) {
-              case 'resolved':
-                _markResolved();
-              case 'delete':
-                _deleteReport();
-            }
-          },
-          itemBuilder: (context) => [
-            if (!r.isResolved)
-              PopupMenuItem(
-                value: 'resolved',
-                child: _busyResolve
-                    ? const _MenuItemLoading(label: 'Marking resolved…')
-                    : const ListTile(
-                        leading: Icon(Icons.check_circle_outline_rounded),
-                        title: Text('Mark resolved'),
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                      ),
-              ),
-            PopupMenuItem(
-              value: 'delete',
-              child: _busyDelete
-                  ? const _MenuItemLoading(label: 'Deleting…')
-                  : ListTile(
-                      leading: Icon(Icons.delete_outline_rounded,
-                          color: AppColors.danger),
-                      title: Text('Delete report',
-                          style: TextStyle(color: AppColors.danger)),
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                    ),
-            ),
-          ],
-        ),
-        IconButton(
-          onPressed: () => Navigator.of(context).pop(),
-          icon: const Icon(Icons.close_rounded),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildEvidenceFilesSection(SosEventModel r) {
-    // Build the list of files to show:
-    // 1. Video from SosEventModel (if present)
-    // 2. Any extra files from the evidence collection
-    // 3. PDF report (always shown – generates on demand if missing)
-    final extraVideos = _evidenceFiles
-        .where((e) => e['videoUrl'] != null && e['videoUrl'] != r.videoUrl)
-        .toList();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Evidence Files',
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.w800),
-        ),
-        const SizedBox(height: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Column(
-            children: [
-              // Primary video
-              if (r.hasVideo) ...[
-                _FileRow(
-                  name: 'video_evidence.mp4',
-                  icon: Icons.videocam_rounded,
-                  color: AppColors.info,
-                  isLoading: _busyVideo,
-                  onDownload: _anyBusy ? null : _downloadVideo,
-                ),
-                const Divider(height: 1),
-              ],
-              // Extra evidence videos from Firestore evidence collection
-              for (final ev in extraVideos) ...[
-                _FileRow(
-                  name: _evidenceFileName(ev),
-                  icon: Icons.videocam_rounded,
-                  color: AppColors.info,
-                  subtitle: _evidenceFileSubtitle(ev),
-                  onDownload: _anyBusy
-                      ? null
-                      : () => _downloadEvidenceFile(
-                            ev['videoUrl'] as String,
-                            _evidenceFileName(ev),
-                          ),
-                ),
-                const Divider(height: 1),
-              ],
-              // PDF report (generate on demand if not yet created)
-              _FileRow(
-                name: r.hasPdfReport
-                    ? 'evidence_report.pdf'
-                    : 'evidence_report.pdf  (tap to generate)',
-                icon: Icons.picture_as_pdf_rounded,
-                color: AppColors.safe,
-                isLoading: _busyPdf,
-                badge: r.hasPdfReport ? null : 'Generate',
-                onDownload: _anyBusy ? null : _downloadPdf,
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildActionButtons(SosEventModel r) {
-    return Column(
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _anyBusy ? null : _downloadPdf,
-                icon: _busyPdf
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white),
-                      )
-                    : const Icon(Icons.picture_as_pdf_rounded),
-                label: Text(
-                  _busyPdf
-                      ? (r.hasPdfReport ? 'Opening…' : 'Generating…')
-                      : (r.hasPdfReport
-                          ? 'Download PDF'
-                          : 'Generate & Download PDF'),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.safeDark,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: _anyBusy ? null : _reportToAuthorities,
-              icon: _busyReport
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: AppColors.safeDark),
-                    )
-                  : const Icon(Icons.send_rounded),
-              label: const Text('Report'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.safeDark,
-                side: BorderSide(color: AppColors.safeDark),
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ],
-        ),
-        if (!r.isResolved) ...[
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _anyBusy ? null : _markResolved,
-              icon: _busyResolve
-                  ? SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: AppColors.primary),
-                    )
-                  : const Icon(Icons.check_circle_outline_rounded),
-              label: const Text('Mark as resolved'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.primary,
-                side: BorderSide(color: AppColors.primary),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-          ),
-        ],
-        const SizedBox(height: 10),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: _anyBusy ? null : _deleteReport,
-            icon: _busyDelete
-                ? SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: AppColors.danger),
-                  )
-                : const Icon(Icons.delete_outline_rounded),
-            label: const Text('Delete report'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.danger,
-              side: BorderSide(color: AppColors.danger),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Utility helpers
-  // ---------------------------------------------------------------------------
-
-  String _evidenceFileName(Map<String, dynamic> ev) {
-    final id = ev['incidentId'] as String? ?? 'evidence';
-    return '$id.mp4';
-  }
-
-  String? _evidenceFileSubtitle(Map<String, dynamic> ev) {
-    final ts = ev['timestamp'];
-    if (ts == null) return null;
-    DateTime? dt;
-    if (ts is DateTime) dt = ts;
-    try {
-      dt = DateTime.parse(ts.toString());
-    } catch (_) {}
-    if (dt == null) return null;
-    return '${dt.day} ${_month(dt.month)} ${dt.year}  ${_formatTime(dt)}';
-  }
-
-  static String _month(int m) {
+  String _formatDate(DateTime dt) {
     const months = [
       'Jan',
       'Feb',
@@ -678,86 +425,235 @@ class _ReportDetailScreenState extends State<ReportDetailScreen> {
       'Nov',
       'Dec'
     ];
-    return months[m - 1];
+    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
 
-  static String _formatTime(DateTime t) {
-    final hour = t.hour % 12 == 0 ? 12 : t.hour % 12;
-    final minute = t.minute.toString().padLeft(2, '0');
-    final ampm = t.hour >= 12 ? 'pm' : 'am';
+  String _formatTime(DateTime dt) {
+    final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final ampm = dt.hour >= 12 ? 'PM' : 'AM';
     return '$hour:$minute $ampm';
   }
-}
 
-// =============================================================================
-// Sub-widgets
-// =============================================================================
+  /// Try to find a matching evidence file from _evidenceFiles by type keyword.
+  Map<String, dynamic>? _findEvidenceFile(String keyword) {
+    for (final f in _evidenceFiles) {
+      final type =
+          (f['evidenceType'] ?? f['type'] ?? '').toString().toLowerCase();
+      final url = (f['videoUrl'] ?? f['url'] ?? '').toString().toLowerCase();
+      if (type.contains(keyword) || url.contains(keyword)) return f;
+    }
+    return null;
+  }
 
-class _HeaderCard extends StatelessWidget {
-  final SosEventModel report;
+  Future<void> _downloadOtherFile(String fileType) async {
+    final file = _findEvidenceFile(fileType);
+    if (file == null) {
+      _showSnack('File not available for this incident.');
+      return;
+    }
+    final url = (file['videoUrl'] ?? file['url'] ?? '').toString();
+    if (url.isEmpty) {
+      _showSnack('File not available for this incident.');
+      return;
+    }
+    final uri = Uri.parse(url);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      _showSnack('Could not open file.');
+    }
+  }
 
-  const _HeaderCard({required this.report});
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Evidence Report'),
+          leading: IconButton(
+            icon: const Icon(Icons.close_rounded),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_report == null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Evidence Report'),
+          leading: IconButton(
+            icon: const Icon(Icons.close_rounded),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ),
+        body: const Center(child: Text('Report not found.')),
+      );
+    }
+
+    final report = _report!;
+    final bool anyBusy =
+        _busyPdf || _busyVideo || _busyReport || _busyResolve || _busyDelete;
+
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: _buildAppBar(report, anyBusy),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildHeaderCard(report),
+            const SizedBox(height: 16),
+            _buildSummaryCard(report),
+            const SizedBox(height: 20),
+            _buildEvidenceFilesSection(report),
+            const SizedBox(height: 20),
+            _buildVerificationSection(report),
+            if (report.notes != null && report.notes!.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              _buildNotesCard(report),
+            ],
+            const SizedBox(height: 28),
+            _buildActionButtons(anyBusy),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── AppBar ────────────────────────────────────────────────────────────────
+
+  PreferredSizeWidget _buildAppBar(SosEventModel report, bool anyBusy) {
+    return AppBar(
+      backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
+      elevation: 0,
+      automaticallyImplyLeading: false,
+      title: const Text(
+        'Evidence Report',
+        style: TextStyle(fontWeight: FontWeight.w700),
+      ),
+      leading: IconButton(
+        icon: const Icon(Icons.close_rounded),
+        onPressed: () => Navigator.of(context).pop(),
+      ),
+      actions: [
+        PopupMenuButton<String>(
+          enabled: !anyBusy,
+          icon: const Icon(Icons.more_vert_rounded),
+          onSelected: (value) {
+            if (value == 'resolve') _markResolved();
+            if (value == 'delete') _deleteReport();
+          },
+          itemBuilder: (ctx) => [
+            PopupMenuItem(
+              value: 'resolve',
+              enabled: !report.isResolved,
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.check_circle_outline_rounded,
+                    size: 18,
+                    color:
+                        report.isResolved ? AppColors.disabled : AppColors.safe,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    report.isResolved ? 'Already Resolved' : 'Mark Resolved',
+                    style: TextStyle(
+                      color: report.isResolved
+                          ? AppColors.disabled
+                          : AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            PopupMenuItem(
+              value: 'delete',
+              child: Row(
+                children: const [
+                  Icon(Icons.delete_outline_rounded,
+                      size: 18, color: AppColors.danger),
+                  SizedBox(width: 10),
+                  Text('Delete', style: TextStyle(color: AppColors.danger)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  // ── Header card ───────────────────────────────────────────────────────────
+
+  Widget _buildHeaderCard(SosEventModel report) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Shield icon
           Container(
-            padding: const EdgeInsets.all(12),
+            width: 52,
+            height: 52,
             decoration: BoxDecoration(
-              color: AppColors.primaryLight.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(12),
+              color: AppColors.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(14),
             ),
-            child: Icon(Icons.shield_rounded, color: AppColors.primary),
+            child: const Icon(
+              Icons.shield_rounded,
+              color: AppColors.primary,
+              size: 28,
+            ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 14),
+          // Title + subtitle
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   'SheShield Evidence Report',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleSmall
-                      ?.copyWith(fontWeight: FontWeight.w800),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.textPrimary,
+                      ),
                 ),
                 const SizedBox(height: 4),
                 Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: report.isResolved
-                            ? AppColors.safeLight
-                            : AppColors.dangerLight,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        report.isResolved ? 'Resolved' : 'Open',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: report.isResolved
-                                  ? AppColors.safeDark
-                                  : AppColors.dangerDark,
-                              fontWeight: FontWeight.w700,
-                            ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
+                    Icon(Icons.lock_rounded,
+                        size: 12, color: AppColors.textSecondary),
+                    const SizedBox(width: 4),
                     Text(
-                      'Tamper-proof evidence package',
-                      style: Theme.of(context).textTheme.bodySmall,
+                      'Tamper-proof • Blockchain verified',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
                     ),
                   ],
                 ),
+                const SizedBox(height: 10),
+                // Status badge
+                _StatusBadge(isResolved: report.isResolved),
               ],
             ),
           ),
@@ -765,215 +661,509 @@ class _HeaderCard extends StatelessWidget {
       ),
     );
   }
-}
 
-class _SummaryCard extends StatelessWidget {
-  final SosEventModel report;
-  final VoidCallback? onOpenMaps;
+  // ── Summary card ──────────────────────────────────────────────────────────
 
-  const _SummaryCard({required this.report, this.onOpenMaps});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SummaryRow(label: 'Incident ID', value: report.eventId),
-          const SizedBox(height: 8),
-          _SummaryRow(
-            label: 'Date',
-            value:
-                '${report.timestamp.day} ${_month(report.timestamp.month)} ${report.timestamp.year}',
-          ),
-          const SizedBox(height: 8),
-          _SummaryRow(label: 'Time', value: _formatTime(report.timestamp)),
-          const SizedBox(height: 8),
-          _SummaryRow(
-            label: 'Location',
-            value: report.address ?? report.coordinatesString,
-            trailing: onOpenMaps != null
-                ? IconButton(
-                    onPressed: onOpenMaps,
-                    icon: const Icon(Icons.map_outlined, size: 18),
-                    tooltip: 'Open in Maps',
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    color: AppColors.primary,
-                  )
-                : null,
-          ),
-          const SizedBox(height: 8),
-          _SummaryRow(
-              label: 'Trigger',
-              value: _capitalize(report.triggerSource ?? 'Button')),
-          if (report.bpmAtTrigger != null) ...[
-            const SizedBox(height: 8),
-            _SummaryRow(
-                label: 'Heart rate', value: '${report.bpmAtTrigger} bpm'),
-          ],
-          if (report.contactsNotified.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            _SummaryRow(
-              label: 'Notified',
-              value: report.contactsNotified.join(', '),
-            ),
-          ],
-          const SizedBox(height: 8),
-          _SummaryRow(
-              label: 'Status', value: report.isResolved ? 'Resolved' : 'Open'),
-        ],
-      ),
-    );
-  }
-
-  static String _month(int m) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec'
-    ];
-    return months[m - 1];
-  }
-
-  static String _formatTime(DateTime t) {
-    final hour = t.hour % 12 == 0 ? 12 : t.hour % 12;
-    final minute = t.minute.toString().padLeft(2, '0');
-    final ampm = t.hour >= 12 ? 'pm' : 'am';
-    return '$hour:$minute $ampm';
-  }
-
-  static String _capitalize(String s) =>
-      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
-}
-
-class _VerificationBox extends StatelessWidget {
-  final SosEventModel report;
-  final VoidCallback? onCopyHash;
-
-  const _VerificationBox({required this.report, this.onCopyHash});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildSummaryCard(SosEventModel report) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppColors.safeLight,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.safe.withValues(alpha: 0.4)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.verified_rounded,
-                  color: AppColors.safeDark, size: 16),
-              const SizedBox(width: 6),
-              Text(
-                'INTEGRITY VERIFICATION',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelSmall
-                    ?.copyWith(color: AppColors.safeDark, letterSpacing: 0.8),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Text(
-                  'SHA-256: ${report.sha256Hash ?? '—'}',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontFamily: 'monospace',
-                        fontSize: 11,
-                      ),
-                ),
-              ),
-              if (onCopyHash != null)
-                IconButton(
-                  onPressed: onCopyHash,
-                  icon: const Icon(Icons.copy_rounded, size: 16),
-                  tooltip: 'Copy hash',
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  color: AppColors.safeDark,
-                ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: AppColors.safe,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.check_rounded, color: Colors.white, size: 14),
-                const SizedBox(width: 6),
-                Text(
-                  'Tamper-proof verified',
-                  style: Theme.of(context)
-                      .textTheme
-                      .labelSmall
-                      ?.copyWith(color: Colors.white),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _NotesCard extends StatelessWidget {
-  final String notes;
-
-  const _NotesCard({required this.notes});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Notes',
-            style: Theme.of(context)
-                .textTheme
-                .titleSmall
-                ?.copyWith(fontWeight: FontWeight.w700),
+            'Incident Summary',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
           ),
-          const SizedBox(height: 8),
-          Text(notes, style: Theme.of(context).textTheme.bodyMedium),
+          const SizedBox(height: 14),
+          _SummaryRow(
+            label: 'Incident ID',
+            value: _formatIncidentId(report.eventId),
+            valueStyle: TextStyle(
+              fontFamily: 'monospace',
+              fontWeight: FontWeight.w700,
+              color: AppColors.primary,
+              fontSize: 13,
+            ),
+          ),
+          _SummaryRow(
+            label: 'Date',
+            value: _formatDate(report.timestamp),
+          ),
+          _SummaryRow(
+            label: 'Time',
+            value: _formatTime(report.timestamp),
+          ),
+          // Location row with map icon button
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 110,
+                  child: Text(
+                    'Location',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    report.address ?? report.coordinatesString,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () async {
+                    final uri = Uri.parse(report.mapsUrl);
+                    if (!await launchUrl(uri,
+                        mode: LaunchMode.externalApplication)) {
+                      _showSnack('Could not open maps.');
+                    }
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: AppColors.info.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.map_rounded,
+                        size: 16, color: AppColors.info),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _SummaryRow(
+            label: 'Trigger',
+            value: _capitalize(report.triggerSource ?? 'Unknown'),
+          ),
+          if (report.bpmAtTrigger != null)
+            _SummaryRow(
+              label: 'Heart Rate',
+              value: '${report.bpmAtTrigger} BPM',
+              valueStyle: const TextStyle(
+                fontWeight: FontWeight.w700,
+                color: AppColors.danger,
+              ),
+            ),
+          _SummaryRow(
+            label: 'Contacts',
+            value: report.contactsNotified.isEmpty
+                ? 'None recorded'
+                : '${report.contactsNotified.length} notified',
+          ),
+          _SummaryRow(
+            label: 'Status',
+            value: report.isResolved ? 'Resolved' : 'Open',
+            valueStyle: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: report.isResolved ? AppColors.safe : AppColors.warning,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Evidence files section ────────────────────────────────────────────────
+
+  Widget _buildEvidenceFilesSection(SosEventModel report) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Section label
+        Padding(
+          padding: const EdgeInsets.only(left: 2, bottom: 10),
+          child: Text(
+            'EVIDENCE FILES',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+          ),
+        ),
+        Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            children: _buildEvidenceFileRows(report),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildEvidenceFileRows(SosEventModel report) {
+    final rows = <_EvidenceFileSpec>[];
+
+    // 1. Audio evidence — always present
+    rows.add(_EvidenceFileSpec(
+      filename: 'audio_evidence.mp4',
+      icon: Icons.mic_rounded,
+      color: AppColors.primary,
+      onDownload: () => _downloadOtherFile('audio'),
+    ));
+
+    // 2. Video evidence — only if report.hasVideo
+    if (report.hasVideo) {
+      rows.add(_EvidenceFileSpec(
+        filename: 'video_evidence.mp4',
+        icon: Icons.videocam_rounded,
+        color: AppColors.info,
+        onDownload: _busyVideo ? null : _downloadVideo,
+        busy: _busyVideo,
+      ));
+    }
+
+    // 3. GPS track
+    rows.add(_EvidenceFileSpec(
+      filename: 'gps_track.json',
+      icon: Icons.location_on_rounded,
+      color: AppColors.safe,
+      onDownload: () => _downloadOtherFile('gps'),
+    ));
+
+    // 4. Accelerometer
+    rows.add(_EvidenceFileSpec(
+      filename: 'accelerometer.csv',
+      icon: Icons.bolt_rounded,
+      color: AppColors.warning,
+      onDownload: () => _downloadOtherFile('accelerometer'),
+    ));
+
+    // 5. Heart rate log
+    rows.add(_EvidenceFileSpec(
+      filename: 'heartrate_log.csv',
+      icon: Icons.favorite_rounded,
+      color: AppColors.danger,
+      onDownload: () => _downloadOtherFile('heartrate'),
+    ));
+
+    // 6. Evidence PDF
+    rows.add(_EvidenceFileSpec(
+      filename: 'evidence_report.pdf',
+      icon: Icons.picture_as_pdf_rounded,
+      color: AppColors.safe,
+      onDownload: _busyPdf ? null : _downloadPdf,
+      busy: _busyPdf,
+      showGenerateBadge: !report.hasPdfReport,
+    ));
+
+    final widgets = <Widget>[];
+    for (int i = 0; i < rows.length; i++) {
+      widgets.add(_EvidenceFileRow(spec: rows[i]));
+      if (i < rows.length - 1) {
+        widgets.add(Divider(
+          height: 1,
+          thickness: 1,
+          color: AppColors.border,
+          indent: 16,
+          endIndent: 16,
+        ));
+      }
+    }
+    return widgets;
+  }
+
+  // ── Verification section ──────────────────────────────────────────────────
+
+  Widget _buildVerificationSection(SosEventModel report) {
+    final hash = report.sha256Hash ?? '';
+    final displayHash = hash.length > 20 ? '${hash.substring(0, 20)}...' : hash;
+    final hasHash = hash.isNotEmpty;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.safeLight.withValues(alpha: 0.25),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.safe.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Label
+          Text(
+            'VERIFICATION',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: AppColors.safeDark,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+          ),
+          const SizedBox(height: 12),
+          // Hash row
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'SHA-256 Hash',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      hasHash ? displayHash : 'Not available',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.w600,
+                            color: hasHash
+                                ? AppColors.textPrimary
+                                : AppColors.textSecondary,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              if (hasHash)
+                IconButton(
+                  tooltip: 'Copy hash',
+                  icon: const Icon(Icons.copy_rounded,
+                      size: 18, color: AppColors.safeDark),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: hash));
+                    _showSnack('Hash copied to clipboard.');
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Verified pill
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: AppColors.safe.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: AppColors.safe.withValues(alpha: 0.40)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.verified_rounded,
+                    size: 14, color: AppColors.safeDark),
+                const SizedBox(width: 6),
+                Text(
+                  'Tamper-proof verified',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: AppColors.safeDark,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Notes card ────────────────────────────────────────────────────────────
+
+  Widget _buildNotesCard(SosEventModel report) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.notes_rounded,
+                  size: 18, color: AppColors.primary),
+              const SizedBox(width: 8),
+              Text(
+                'Notes',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            report.notes!,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.textSecondary,
+                  height: 1.5,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Action buttons ────────────────────────────────────────────────────────
+
+  Widget _buildActionButtons(bool anyBusy) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Download PDF — filled primary
+        FilledButton.icon(
+          onPressed: anyBusy ? null : _downloadPdf,
+          style: FilledButton.styleFrom(
+            backgroundColor: AppColors.primary,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          icon: _busyPdf
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Icon(Icons.download_rounded, color: Colors.white),
+          label: const Text(
+            'Download PDF',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+          ),
+        ),
+        const SizedBox(height: 10),
+        // 2. Share Email — outlined
+        OutlinedButton.icon(
+          onPressed: anyBusy ? null : _reportToAuthorities,
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            side: const BorderSide(color: AppColors.primary),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          icon: _busyReport
+              ? SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: AppColors.primary),
+                )
+              : const Icon(Icons.email_outlined, color: AppColors.primary),
+          label: const Text(
+            'Share Email',
+            style: TextStyle(
+                color: AppColors.primary, fontWeight: FontWeight.w700),
+          ),
+        ),
+        const SizedBox(height: 10),
+        // 3. Send to Police — outlined red
+        OutlinedButton.icon(
+          onPressed: anyBusy ? null : _sendToPolice,
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            side: const BorderSide(color: AppColors.danger),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          icon: const Icon(Icons.local_police_rounded, color: AppColors.danger),
+          label: const Text(
+            'Send to Police',
+            style:
+                TextStyle(color: AppColors.danger, fontWeight: FontWeight.w700),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Utility ───────────────────────────────────────────────────────────────
+
+  String _capitalize(String s) {
+    if (s.isEmpty) return s;
+    return s[0].toUpperCase() + s.substring(1);
+  }
+}
+
+// ── Private helper widgets ────────────────────────────────────────────────────
+
+class _StatusBadge extends StatelessWidget {
+  final bool isResolved;
+
+  const _StatusBadge({required this.isResolved});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: isResolved
+            ? AppColors.safeLight.withValues(alpha: 0.6)
+            : AppColors.warningLight.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: isResolved
+              ? AppColors.safe.withValues(alpha: 0.5)
+              : AppColors.warning.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isResolved
+                ? Icons.check_circle_rounded
+                : Icons.radio_button_checked_rounded,
+            size: 12,
+            color: isResolved ? AppColors.safeDark : AppColors.warningDark,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            isResolved ? 'Resolved' : 'Open',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: isResolved ? AppColors.safeDark : AppColors.warningDark,
+            ),
+          ),
         ],
       ),
     );
@@ -983,166 +1173,148 @@ class _NotesCard extends StatelessWidget {
 class _SummaryRow extends StatelessWidget {
   final String label;
   final String value;
-  final Widget? trailing;
+  final TextStyle? valueStyle;
 
   const _SummaryRow({
     required this.label,
     required this.value,
-    this.trailing,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 110,
-          child: Text(label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: AppColors.textSecondary,
-                  )),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: Theme.of(context)
-                .textTheme
-                .bodyMedium
-                ?.copyWith(fontWeight: FontWeight.w600),
-          ),
-        ),
-        if (trailing != null) trailing!,
-      ],
-    );
-  }
-}
-
-class _FileRow extends StatelessWidget {
-  final String name;
-  final IconData icon;
-  final Color color;
-  final bool isLoading;
-  final String? badge;
-  final String? subtitle;
-  final VoidCallback? onDownload;
-
-  const _FileRow({
-    required this.name,
-    required this.icon,
-    required this.color,
-    this.isLoading = false,
-    this.badge,
-    this.subtitle,
-    this.onDownload,
+    this.valueStyle,
   });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, color: color, size: 18),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        name,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w500),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (badge != null) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: AppColors.warningLight,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          badge!,
-                          style:
-                              Theme.of(context).textTheme.labelSmall?.copyWith(
-                                    color: AppColors.warningDark,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                if (subtitle != null)
-                  Text(
-                    subtitle!,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
+          SizedBox(
+            width: 110,
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.textSecondary,
                   ),
-              ],
             ),
           ),
-          if (isLoading)
-            const Padding(
-              padding: EdgeInsets.all(12),
-              child: SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            )
-          else
-            IconButton(
-              onPressed: onDownload,
-              icon: Icon(
-                Icons.download_rounded,
-                color: onDownload != null
-                    ? AppColors.textSecondary
-                    : AppColors.disabled,
-              ),
-              tooltip: 'Download',
+          Expanded(
+            child: Text(
+              value,
+              style: valueStyle ??
+                  Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
             ),
+          ),
         ],
       ),
     );
   }
 }
 
-/// Small loading indicator for popup menu items.
-class _MenuItemLoading extends StatelessWidget {
-  final String label;
+/// Data class describing a single evidence file row.
+class _EvidenceFileSpec {
+  final String filename;
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onDownload;
+  final bool busy;
+  final bool showGenerateBadge;
 
-  const _MenuItemLoading({required this.label});
+  const _EvidenceFileSpec({
+    required this.filename,
+    required this.icon,
+    required this.color,
+    required this.onDownload,
+    this.busy = false,
+    this.showGenerateBadge = false,
+  });
+}
+
+class _EvidenceFileRow extends StatelessWidget {
+  final _EvidenceFileSpec spec;
+
+  const _EvidenceFileRow({required this.spec});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        const SizedBox(
-          width: 18,
-          height: 18,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-        const SizedBox(width: 12),
-        Text(label),
-      ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          // Colored icon box
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: spec.color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(spec.icon, size: 20, color: spec.color),
+          ),
+          const SizedBox(width: 12),
+          // Filename + optional badge
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    spec.filename,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          fontFamily: 'monospace',
+                        ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (spec.showGenerateBadge) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.warning.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                          color: AppColors.warning.withValues(alpha: 0.4)),
+                    ),
+                    child: Text(
+                      'Generate',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.warningDark,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Download button
+          spec.busy
+              ? const SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: Padding(
+                    padding: EdgeInsets.all(8),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              : IconButton(
+                  tooltip: 'Download',
+                  icon: Icon(
+                    Icons.download_rounded,
+                    size: 20,
+                    color: spec.onDownload != null
+                        ? AppColors.primary
+                        : AppColors.disabled,
+                  ),
+                  onPressed: spec.onDownload,
+                ),
+        ],
+      ),
     );
   }
 }

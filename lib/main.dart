@@ -37,37 +37,90 @@ void main() async {
     DeviceOrientation.portraitUp,
   ]);
 
-  // Initialize Firebase
+  // Initialize Firebase — must succeed before runApp.
+  // Guard against duplicate-app on hot restart: if Firebase is already
+  // initialized (apps list is non-empty), reuse it instead of calling
+  // initializeApp() again.
+  bool firebaseReady = false;
   try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    }
+    firebaseReady = true;
     AppLogger.i('Firebase initialized successfully');
 
-    // Development-time verification of Firestore access.
-    // This is intentionally lightweight and only writes in debug builds.
-    await FirebaseService().smokeTest();
+    // Smoke test is fire-and-forget — never block startup on it.
+    FirebaseService().smokeTest().catchError((e) {
+      AppLogger.w('Smoke test failed (non-fatal)', e);
+    });
   } catch (e, stackTrace) {
     AppLogger.e('Firebase initialization failed', e, stackTrace);
   }
 
-  runApp(const SheShieldApp());
+  runApp(SheShieldApp(firebaseReady: firebaseReady));
 }
 
 /// Root widget for SheShield app
 /// Handles all global configuration, providers, and routing
 class SheShieldApp extends StatelessWidget {
-  const SheShieldApp({Key? key}) : super(key: key);
+  final bool firebaseReady;
+
+  const SheShieldApp({Key? key, required this.firebaseReady}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
+    // If Firebase failed to initialize, show a clear error screen instead
+    // of crashing inside a provider constructor.
+    if (!firebaseReady) {
+      return MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          backgroundColor: const Color(0xFF1a1a2e),
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.cloud_off_rounded,
+                      color: Colors.white54, size: 64),
+                  const SizedBox(height: 24),
+                  const Text(
+                    'Unable to connect',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Firebase could not be initialized.\nCheck your internet connection and restart the app.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white54, fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
     return MultiProvider(
       // ========== GLOBAL PROVIDERS ==========
       // Order matters: auth_provider must be initialized first
       providers: [
         // Central app state
         ChangeNotifierProvider(
-          create: (_) => AppState(),
+          create: (_) {
+            final state = AppState();
+            // Restore persisted theme on startup
+            state.loadPersistedTheme();
+            return state;
+          },
           lazy: false,
         ),
         // Authentication provider (depends on AppState)

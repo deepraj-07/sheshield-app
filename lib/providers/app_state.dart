@@ -3,13 +3,14 @@ import '../models/user_model.dart';
 import '../models/contact_model.dart';
 import '../models/bracelet_model.dart';
 import '../core/utils/logger.dart';
+import '../services/local_storage_service.dart';
 
 /// Enum for SOS state
 enum SosState {
-  idle,      // No SOS active
+  idle, // No SOS active
   countdown, // Countdown to SOS trigger
-  active,    // SOS is active/triggered
-  resolved,  // SOS has been resolved
+  active, // SOS is active/triggered
+  resolved, // SOS has been resolved
 }
 
 /// Central application state management.
@@ -83,14 +84,16 @@ class AppState extends ChangeNotifier {
   // ========== CONTACTS MANAGEMENT ==========
   void setEmergencyContacts(List<ContactModel> contacts) {
     _emergencyContacts = contacts;
-    AppLogger.providerStateChange('AppState', 'Contacts updated: ${contacts.length}');
+    AppLogger.providerStateChange(
+        'AppState', 'Contacts updated: ${contacts.length}');
     notifyListeners();
   }
 
   void addEmergencyContact(ContactModel contact) {
     if (_emergencyContacts.length < 5) {
       _emergencyContacts.add(contact);
-      AppLogger.providerStateChange('AppState', 'Contact added: ${contact.name}');
+      AppLogger.providerStateChange(
+          'AppState', 'Contact added: ${contact.name}');
       notifyListeners();
     } else {
       AppLogger.w('Cannot add more than 5 emergency contacts');
@@ -108,7 +111,8 @@ class AppState extends ChangeNotifier {
         _emergencyContacts.indexWhere((c) => c.contactId == contact.contactId);
     if (index >= 0) {
       _emergencyContacts[index] = contact;
-      AppLogger.providerStateChange('AppState', 'Contact updated: ${contact.name}');
+      AppLogger.providerStateChange(
+          'AppState', 'Contact updated: ${contact.name}');
       notifyListeners();
     }
   }
@@ -127,6 +131,34 @@ class AppState extends ChangeNotifier {
   }
 
   bool get isSosActive => _sosState == SosState.active;
+
+  // ========== STEALTH SESSION STATE ==========
+  bool _isStealthSessionActive = false;
+  String? _stealthSessionId;
+
+  bool get isStealthSessionActive => _isStealthSessionActive;
+  String? get stealthSessionId => _stealthSessionId;
+
+  void setStealthSessionActive(bool active, {String? sessionId}) {
+    _isStealthSessionActive = active;
+    _stealthSessionId = active ? sessionId : null;
+    AppLogger.providerStateChange(
+        'AppState', 'Stealth session: $active (id: $sessionId)');
+    notifyListeners();
+  }
+
+  // ========== SOS COMPLETED COUNTER ==========
+  // Incremented every time an SOS event is fully saved to Firestore.
+  // EvidenceOverview listens to this to auto-refresh the report list.
+  int _sosCompletedCount = 0;
+  int get sosCompletedCount => _sosCompletedCount;
+
+  void notifySosEventSaved() {
+    _sosCompletedCount++;
+    AppLogger.providerStateChange(
+        'AppState', 'SOS event saved — count: $_sosCompletedCount');
+    notifyListeners();
+  }
 
   // ========== BRACELET STATE MANAGEMENT ==========
   void updateBraceletData(BraceletModel data) {
@@ -192,8 +224,17 @@ class AppState extends ChangeNotifier {
   }
 
   void toggleThemeMode() {
-    _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+    _themeMode =
+        _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+    LocalStorageService.saveThemeMode(_themeMode == ThemeMode.dark);
     AppLogger.providerStateChange('AppState', 'Theme mode: $_themeMode');
+    notifyListeners();
+  }
+
+  /// Call once at app startup to restore persisted theme.
+  Future<void> loadPersistedTheme() async {
+    final s = await LocalStorageService.loadSettings();
+    _themeMode = s.isDarkMode ? ThemeMode.dark : ThemeMode.light;
     notifyListeners();
   }
 

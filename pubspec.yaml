@@ -22,11 +22,12 @@ dependencies:
   cloud_firestore: ^4.14.0
   firebase_storage: ^11.6.0
   firebase_messaging: ^14.7.0
+  firebase_database: ^10.5.7  # Realtime Database — Raspberry Pi IoT integration (compatible with firebase_core ^2.x)
 
   # ========== LOCATION & MAPS ==========
   geolocator: ^10.1.0
-  google_maps_flutter: ^2.5.0
-  geocoding: ^2.1.1
+  flutter_map: ^6.1.0          # OpenStreetMap renderer — free, no billing
+  latlong2: ^0.9.0             # LatLng type for flutter_map
 
   # ========== BLUETOOTH ==========
   flutter_bluetooth_serial: ^0.4.0
@@ -34,9 +35,11 @@ dependencies:
   # ========== CAMERA & MEDIA ==========
   camera: ^0.10.5+5
   video_player: ^2.8.2
+  image_picker: ^1.0.7
 
   # ========== AUDIO & VOICE ==========
   permission_handler: ^11.3.1
+  local_auth: ^2.1.8           # Biometric login — fingerprint / Face ID
 
   # ========== LOCAL STORAGE ==========
   shared_preferences: ^2.2.2
@@ -58,6 +61,7 @@ dependencies:
   flutter_dotenv: ^5.1.0
   logger: ^2.0.1+1
   telephony: ^0.2.0
+  mailer: ^6.1.0               # SMTP email — silent background email alerts
 
 dev_dependencies:
   flutter_test:
@@ -68,9 +72,6 @@ flutter:
   uses-material-design: true
   
   assets:
+    - .env
     - assets/images/
     - assets/icons/
-    # NOTE: .env is intentionally NOT listed here.
-    # Declaring .env as an asset would bundle it inside the APK, exposing
-    # secrets to anyone who unpacks the binary. It is loaded from the
-    # filesystem in debug/local builds only via AppEnv.load().

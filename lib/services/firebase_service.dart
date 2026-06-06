@@ -21,11 +21,19 @@ class FirebaseService {
   FirebaseAuth get auth => FirebaseAuth.instance;
   FirebaseFirestore get firestore => FirebaseFirestore.instance;
   FirebaseStorage get storage => FirebaseStorage.instance;
+  FirebaseApp? get app => _app; // expose for RTDB instanceFor()
 
   /// Initialize Firebase if not already initialized. Safe to call multiple times.
   Future<FirebaseApp> init() async {
     if (_initialized && _app != null) return _app!;
     try {
+      // If Firebase.apps is non-empty, Firebase was already initialized
+      // (e.g. in main() or by a previous call). Reuse the default app.
+      if (Firebase.apps.isNotEmpty) {
+        _app = Firebase.app();
+        _initialized = true;
+        return _app!;
+      }
       _app = await Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
       );
@@ -45,7 +53,8 @@ class FirebaseService {
 
     try {
       await init();
-      final doc = firestore.collection('setup_checks').doc('firebase_smoke_test');
+      final doc =
+          firestore.collection('setup_checks').doc('firebase_smoke_test');
       await doc.set(<String, dynamic>{
         'timestamp': FieldValue.serverTimestamp(),
         'app': 'SheShield',

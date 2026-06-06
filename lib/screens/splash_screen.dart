@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../core/constants/app_colors.dart';
 import '../core/utils/logger.dart';
 import '../providers/auth_provider.dart';
+import '../services/biometric_service.dart';
+import '../services/local_storage_service.dart';
 import 'home_screen.dart';
 import 'auth/login_screen.dart';
 
@@ -53,13 +55,14 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _checkAuthStateAndNavigate() async {
     try {
       AppLogger.i('SplashScreen: Starting auth check with 3-second timeout');
-      
+
       // Wait for minimum splash duration with timeout (max 3 seconds)
       final checkAuthFuture = _performAuthCheck();
       await checkAuthFuture.timeout(
         const Duration(seconds: 3),
         onTimeout: () {
-          AppLogger.w('SplashScreen: Auth check timeout reached, proceeding to login');
+          AppLogger.w(
+              'SplashScreen: Auth check timeout reached, proceeding to login');
           return false; // Default to login on timeout
         },
       );
@@ -72,9 +75,10 @@ class _SplashScreenState extends State<SplashScreen>
       // Navigate to appropriate screen
       final authProvider = context.read<AuthProvider>();
       final isAuthenticated = authProvider.isAuthenticated;
-      
-      AppLogger.i('SplashScreen: Auth check complete - isAuthenticated: $isAuthenticated');
-      
+
+      AppLogger.i(
+          'SplashScreen: Auth check complete - isAuthenticated: $isAuthenticated');
+
       if (isAuthenticated) {
         _navigateToHome();
       } else {
@@ -95,17 +99,35 @@ class _SplashScreenState extends State<SplashScreen>
     return true;
   }
 
-  void _navigateToHome() {
+  void _navigateToHome() async {
     AppLogger.d('SplashScreen: Navigating to HomeScreen');
     if (!mounted) return;
-    
+
     try {
+      // Check if biometric login is enabled — if so, require auth before home
+      final settings = await LocalStorageService.loadSettings();
+      if (settings.biometricLogin) {
+        final available = await BiometricService.isAvailable();
+        if (available) {
+          final authenticated = await BiometricService.authenticate(
+            reason: 'Authenticate to open SheShield',
+          );
+          if (!authenticated) {
+            AppLogger.w(
+                'SplashScreen: Biometric failed — redirecting to login');
+            if (mounted) _navigateToLogin();
+            return;
+          }
+          AppLogger.i('SplashScreen: Biometric auth successful');
+        }
+      }
+      if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomeScreen()),
       );
     } catch (e) {
-      AppLogger.e('SplashScreen: Navigation to HomeScreen failed', e, StackTrace.current);
-      // Fallback: navigate to login if home navigation fails
+      AppLogger.e('SplashScreen: Navigation to HomeScreen failed', e,
+          StackTrace.current);
       if (mounted) _navigateToLogin();
     }
   }
@@ -113,13 +135,14 @@ class _SplashScreenState extends State<SplashScreen>
   void _navigateToLogin() {
     AppLogger.d('SplashScreen: Navigating to LoginScreen');
     if (!mounted) return;
-    
+
     try {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const LoginScreen()),
       );
     } catch (e) {
-      AppLogger.e('SplashScreen: Navigation to LoginScreen failed', e, StackTrace.current);
+      AppLogger.e('SplashScreen: Navigation to LoginScreen failed', e,
+          StackTrace.current);
     }
   }
 

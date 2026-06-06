@@ -12,12 +12,12 @@ class AppStrings {
   // ========== HOME SCREEN ==========
   static const String safeStatus = 'You are safe';
   static const String sosActive = 'SOS Active';
-  static const String holdForSos = 'Hold 3 seconds for SOS';
+  static const String holdForSos = 'Hold 1 second for SOS';
   static const String sofBraceletBpm = 'BPM';
   static const String braceletBattery = 'Battery';
   static const String connected = 'Connected';
   static const String disconnected = 'Disconnected';
-  
+
   // ========== ACTION GRID ==========
   static const String shareLocation = 'Share Location';
   static const String nearbyPolice = 'Nearby Police';
@@ -92,7 +92,8 @@ class AppStrings {
   static const String signupError = 'Signup failed. Please try again.';
   static const String passwordMismatch = 'Passwords do not match';
   static const String invalidEmail = 'Please enter a valid email';
-  static const String passwordTooShort = 'Password must be at least 6 characters';
+  static const String passwordTooShort =
+      'Password must be at least 6 characters';
 
   // ========== SOS & EMERGENCY ==========
   static const String sosTriggered = 'SOS Triggered!';
@@ -110,7 +111,8 @@ class AppStrings {
   static const String endJourney = 'End Journey';
   static const String journeyActive = 'Journey Active';
   static const String arrivedSafely = 'Arrived Safely';
-  static const String deviceDeviatedFromRoute = 'You have deviated from the planned route';
+  static const String deviceDeviatedFromRoute =
+      'You have deviated from the planned route';
   static const String estimatedArrival = 'Estimated Arrival';
 
   // ========== PAST EMERGENCIES ==========
@@ -143,7 +145,8 @@ class AppStrings {
   static const String permissionDenied = 'Permission denied';
   static const String enablePermission = 'Please enable permission in settings';
   static const String networkError = 'Network error. Please try again.';
-  static const String somethingWentWrong = 'Something went wrong. Please try again.';
+  static const String somethingWentWrong =
+      'Something went wrong. Please try again.';
 
   // ========== TOAST MESSAGES ==========
   static const String helpReceived = 'Help request received!';

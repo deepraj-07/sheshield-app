@@ -29,7 +29,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   void _loadUserData() {
-    // Get current user from Firebase
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser != null) {
       _user = UserModel(
@@ -40,10 +39,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
         createdAt: currentUser.metadata.creationTime ?? DateTime.now(),
       );
     }
-
-    // Initialize medical info with default values
     _medicalInfo = MedicalInfoModel(
-      userId: currentUser?.uid ?? '',
+      userId: FirebaseAuth.instance.currentUser?.uid ?? '',
       bloodGroup: 'B+',
       doctorName: 'Dr. Mehta',
       doctorContact: '+91 98800 11234',
@@ -82,9 +79,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               // ========== MEDICAL INFORMATION ==========
               MedicalInfoSection(
                 medicalInfo: _medicalInfo,
-                onEdit: () {
-                  AppLogger.d('Edit medical info pressed');
-                },
+                onEdit: () {},
+                onSaved: (updated) => setState(() => _medicalInfo = updated),
               ),
 
               const SizedBox(height: 24),

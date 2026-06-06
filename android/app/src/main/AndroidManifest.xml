@@ -43,10 +43,24 @@
     <!-- ========== NOTIFICATION ========== -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- ========== PHONE CALL ========== -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
+    <!-- Allow querying tel: intent so url_launcher can open the dialer -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.CALL" />
+            <data android:scheme="tel" />
+        </intent>
+    </queries>
+
     <application
         android:label="SheShield"
         android:icon="@android:drawable/sym_def_app_icon"
-        android:debuggable="false"
         android:usesCleartextTraffic="false"
         android:enableOnBackInvokedCallback="true">
 

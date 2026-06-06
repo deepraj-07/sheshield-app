@@ -9,8 +9,11 @@ import 'app_state.dart';
 /// Authentication provider for managing user auth state and operations.
 /// Handles Firebase Auth login/signup/logout and user profile management.
 class AuthProvider extends ChangeNotifier {
-  final FirebaseAuth _firebaseAuth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  // Lazy getters — only accessed after Firebase.initializeApp() has completed.
+  // Using field initializers like `FirebaseAuth.instance` would crash if
+  // the provider is constructed before Firebase is ready.
+  FirebaseAuth get _firebaseAuth => FirebaseAuth.instance;
+  FirebaseFirestore get _firestore => FirebaseFirestore.instance;
   StreamSubscription<User?>? _authStateSubscription;
 
   // ========== STATE ==========
@@ -251,10 +254,14 @@ class AuthProvider extends ChangeNotifier {
 
       // Update local user model
       _currentAppUser = _currentAppUser!.copyWith(
-        isStealthModeEnabled: isStealthModeEnabled ?? _currentAppUser!.isStealthModeEnabled,
-        isVoiceTriggerEnabled: isVoiceTriggerEnabled ?? _currentAppUser!.isVoiceTriggerEnabled,
-        isAudioTriggerEnabled: isAudioTriggerEnabled ?? _currentAppUser!.isAudioTriggerEnabled,
-        isJourneyModeAutoArm: isJourneyModeAutoArm ?? _currentAppUser!.isJourneyModeAutoArm,
+        isStealthModeEnabled:
+            isStealthModeEnabled ?? _currentAppUser!.isStealthModeEnabled,
+        isVoiceTriggerEnabled:
+            isVoiceTriggerEnabled ?? _currentAppUser!.isVoiceTriggerEnabled,
+        isAudioTriggerEnabled:
+            isAudioTriggerEnabled ?? _currentAppUser!.isAudioTriggerEnabled,
+        isJourneyModeAutoArm:
+            isJourneyModeAutoArm ?? _currentAppUser!.isJourneyModeAutoArm,
       );
 
       appState?.setCurrentUser(_currentAppUser);

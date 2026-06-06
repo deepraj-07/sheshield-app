@@ -397,40 +397,39 @@ AppLogger.sosStep(1, 'GPS coordinates captured: 28.6139° N, 77.2090° E');
 
 ## 📸 Gallery
 
-> Screenshots and hardware photos from the SheShield prototype and application.
-
-<br/>
-
 ### App Screenshots
 
 <div align="center">
 
-| Home Screen | Active SOS | Location Tracking |
-|:---:|:---:|:---:|
-| <img src="assets/screenshots/home_screen.png" width="200" alt="Home Screen"/> | <img src="assets/screenshots/sos_active.png" width="200" alt="Active SOS"/> | <img src="assets/screenshots/location_screen.png" width="200" alt="Location Tracking"/> |
-| Central SOS hub | Emergency in progress | Live GPS sharing |
+<img src="assets/screenshots/1.jpeg" width="220"/>
+<img src="assets/screenshots/2.jpeg" width="220"/>
+<img src="assets/screenshots/2.5.jpeg" width="220"/>
 
-| Nearby Police | Stealth Mode | Past Emergencies |
-|:---:|:---:|:---:|
-| <img src="assets/screenshots/nearby_police.png" width="200" alt="Nearby Police"/> | <img src="assets/screenshots/stealth_mode.png" width="200" alt="Stealth Mode"/> | <img src="assets/screenshots/past_emergencies.png" width="200" alt="Past Emergencies"/> |
-| OSM police map | Calculator disguise | SOS history + PDF |
+<br/><br/>
+
+<img src="assets/screenshots/3.jpeg" width="220"/>
+<img src="assets/screenshots/4.jpeg" width="220"/>
+<img src="assets/screenshots/5.jpeg" width="220"/>
+
+<br/><br/>
+
+<img src="assets/screenshots/6.jpeg" width="220"/>
 
 </div>
 
-<br/>
+---
 
-### Hardware — Raspberry Pi 3B+ Wearable Bracelet
+### 🔵 Raspberry Pi Bracelet
 
 <div align="center">
 
-| Bracelet Prototype | Circuit Assembly | Wearable Form Factor |
-|:---:|:---:|:---:|
-| <img src="assets/hardware/bracelet_front.jpg" width="200" alt="Bracelet Front"/> | <img src="assets/hardware/circuit_assembly.jpg" width="200" alt="Circuit Assembly"/> | <img src="assets/hardware/wearable_worn.jpg" width="200" alt="Worn Bracelet"/> |
-| Front view | Internal wiring | On-wrist fit |
+<img src="assets/hardware/iot.jpeg" width="400"/>
+
+<br/>
+
+Custom Raspberry Pi 3B+ wearable SOS bracelet used for discreet emergency triggering.
 
 </div>
-
-> 📁 **To add your photos:** Place screenshot images in `assets/screenshots/` and hardware photos in `assets/hardware/`, matching the filenames above. GitHub will render them automatically.
 
 <br/>
 
